@@ -1,6 +1,9 @@
 const Policy = require('../models/Policy');
+const Premium = require('../models/Premium');
+const User = require('../models/User');
 const axios = require('axios');
 const ethers = require('ethers');
+const crypto = require('crypto');
 const config = require('../config/config');
 
 const provider = new ethers.JsonRpcProvider(config.liskRpc);
@@ -16,22 +19,6 @@ const usdcAbi = [
   'function transferFrom(address from, address to, uint256 amount) public returns (bool)',
 ];
 const usdcContract = new ethers.Contract(config.usdcAddress, usdcAbi, wallet);
-
-const premiums = [
-  {
-    id: 1,
-    name: 'Basic Accident',
-    amounts: { daily: 2, weekly: 50, monthly: 200, annually: 2400 },
-    description: 'Essential coverage for accidents while riding',
-    coverage: {
-      personalAccident: true,
-      medicalExpenses: true,
-      thirdPartyInjury: true,
-      motorcycleDamage: true,
-      theftProtection: true,
-    },
-  },
-];
 
 async function getMpesaToken() {
   const auth = Buffer.from(`${process.env.MPESA_CONSUMER_KEY}:${process.env.MPESA_CONSUMER_SECRET}`).toString('base64');
@@ -49,15 +36,21 @@ exports.buyInsurance = async (req, res) => {
     return res.status(400).json({ message: 'Missing required fields' });
   }
 
-  const premium = premiums.find(p => p.id === premiumId);
-  if (!premium || !premium.amounts[duration]) {
-    console.log('Invalid premium or duration:', { premiumId, duration });
-    return res.status(400).json({ message: 'Invalid premium or duration' });
+  const validDurations = ['daily', 'weekly', 'monthly', 'annually'];
+  if (!validDurations.includes(duration)) {
+    console.log('Invalid duration:', { duration });
+    return res.status(400).json({ message: 'Invalid duration' });
   }
 
   let user = null;
   try {
-    // Fetch user early
+    console.log('Fetching premium...');
+    const premium = await Premium.findOne({ id: premiumId });
+    if (!premium) {
+      console.log('Premium not found:', { premiumId });
+      return res.status(400).json({ message: 'Invalid premium' });
+    }
+
     console.log('Fetching user...');
     user = await User.findOne({ phone });
     if (!user || !user.walletAddress) {
@@ -65,7 +58,6 @@ exports.buyInsurance = async (req, res) => {
       return res.status(400).json({ message: 'User wallet not found. Please complete registration.' });
     }
 
-    // Get quote from Swypt
     console.log('Fetching Swypt quote...');
     const quoteResponse = await axios.post(
       `${config.swyptApiUrl}/swypt-quotes`,
@@ -83,7 +75,6 @@ exports.buyInsurance = async (req, res) => {
       throw new Error(quoteResponse.data.message);
     }
 
-    // Initiate M-Pesa STK push
     console.log('Initiating M-Pesa STK push...');
     const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
     const password = Buffer.from(`${process.env.MPESA_SHORTCODE}${process.env.MPESA_PASSKEY}${timestamp}`).toString('base64');
@@ -110,7 +101,6 @@ exports.buyInsurance = async (req, res) => {
       throw new Error('M-Pesa STK push failed');
     }
 
-    // Initiate Swypt on-ramp
     console.log('Initiating Swypt on-ramp...');
     const onrampResponse = await axios.post(
       `${config.swyptApiUrl}/swypt-onramp`,
@@ -131,9 +121,8 @@ exports.buyInsurance = async (req, res) => {
 
     const orderID = onrampResponse.data.data.orderID;
 
-    // Deposit USDC to HimaEscrow
     console.log('Depositing USDC to escrow...');
-    const amountUsdc = ethers.parseUnits(quoteResponse.data.data.outputAmount, 6); // USDC: 6 decimals
+    const amountUsdc = ethers.parseUnits(quoteResponse.data.data.outputAmount, 6);
     const encryptionKey = Buffer.from(config.encryptionKey, 'hex');
     const decipher = crypto.createDecipheriv('aes-256-cbc', encryptionKey, Buffer.from(user.privateKeyIV, 'hex'));
     let decryptedPrivateKey = decipher.update(user.privateKey, 'hex', 'utf8') + decipher.final('utf8');
@@ -143,7 +132,6 @@ exports.buyInsurance = async (req, res) => {
     const depositTx = await escrowContract.connect(signer).deposit(config.usdcAddress, amountUsdc, user.walletAddress);
     const receipt = await depositTx.wait();
 
-    // Save policy
     console.log('Saving policy...');
     const policy = new Policy({
       phone,
@@ -152,7 +140,7 @@ exports.buyInsurance = async (req, res) => {
       amountKes,
       amountUsdc: quoteResponse.data.data.outputAmount,
       duration,
-      coverage: premium.coverage,
+      coverage: premium.coverages.reduce((acc, cov) => ({ ...acc, [cov.id]: cov.included }), {}),
       orderID,
       transactionHash: receipt.transactionHash,
       status: 'Active',
@@ -170,7 +158,6 @@ exports.buyInsurance = async (req, res) => {
     });
   } catch (error) {
     console.error('Error in buyInsurance:', error.message, error.response?.data || {});
-    // Attempt to create ticket only if user exists
     if (user && user.walletAddress) {
       try {
         await axios.post(
@@ -194,6 +181,17 @@ exports.buyInsurance = async (req, res) => {
       console.log('Skipping ticket creation: No user wallet address available');
     }
     res.status(500).json({ message: 'Failed to purchase insurance', error: error.message });
+  }
+};
+
+exports.getPremiums = async (req, res) => {
+  try {
+    console.log('Fetching all premiums');
+    const premiums = await Premium.find({});
+    res.json({ premiums });
+  } catch (error) {
+    console.error('Error in getPremiums:', error);
+    res.status(500).json({ message: 'Failed to fetch premiums', error: error.message });
   }
 };
 
@@ -238,7 +236,6 @@ exports.claimPolicy = async (req, res) => {
       return res.status(400).json({ message: 'User wallet not found' });
     }
 
-    // Withdraw USDC from HimaEscrow
     console.log('Withdrawing USDC from escrow...');
     const amountUsdc = ethers.parseUnits(policy.amountUsdc || '0', 6);
     const encryptionKey = Buffer.from(config.encryptionKey, 'hex');
@@ -246,9 +243,8 @@ exports.claimPolicy = async (req, res) => {
     let decryptedPrivateKey = decipher.update(user.privateKey, 'hex', 'utf8') + decipher.final('utf8');
     const signer = new ethers.Wallet(decryptedPrivateKey, provider);
     const withdrawTx = await escrowContract.connect(signer).withdraw(config.usdcAddress, amountUsdc, user.walletAddress);
-    const receipt = await withdrawTx.wait();
+    const receipt = await depositTx.wait();
 
-    // Initiate Swypt off-ramp
     console.log('Fetching Swypt off-ramp quote...');
     const quoteResponse = await axios.post(
       `${config.swyptApiUrl}/swypt-quotes`,
