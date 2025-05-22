@@ -119,6 +119,26 @@ exports.registerComplete = async (req, res) => {
   const { phone, motorcycle } = req.body;
   console.log('registerComplete called:', { phone, motorcycle, timestamp: new Date().toISOString() });
   try {
+    // Validate motorcycle object
+    console.log('Validating motorcycle data...');
+    if (!motorcycle || typeof motorcycle !== 'object') {
+      console.log('Invalid motorcycle data:', { motorcycle });
+      return res.status(400).json({ message: 'Motorcycle data must be an object' });
+    }
+    const { type, licensePlate, model, year, engineCapacity } = motorcycle;
+    if (!type || !licensePlate || !model || !year || !engineCapacity) {
+      console.log('Missing motorcycle fields:', { type, licensePlate, model, year, engineCapacity });
+      return res.status(400).json({ message: 'Motorcycle must include type, licensePlate, model, year, and engineCapacity' });
+    }
+    if (typeof year !== 'number' || year < 1900 || year > new Date().getFullYear() + 1) {
+      console.log('Invalid year:', { year });
+      return res.status(400).json({ message: 'Invalid year' });
+    }
+    if (typeof engineCapacity !== 'number' || engineCapacity <= 0) {
+      console.log('Invalid engineCapacity:', { engineCapacity });
+      return res.status(400).json({ message: 'Invalid engine capacity' });
+    }
+
     console.log('Creating new wallet...');
     const userWallet = ethers.Wallet.createRandom();
 
@@ -130,7 +150,7 @@ exports.registerComplete = async (req, res) => {
     }
 
     console.log('Updating user data...');
-    user.motorcycle = motorcycle;
+    user.motorcycle = { type, licensePlate, model, year, engineCapacity };
     user.walletAddress = userWallet.address;
     // Validate encryption key
     console.log('Validating encryption key...');

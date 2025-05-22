@@ -5,7 +5,7 @@ const userSchema = new mongoose.Schema({
   otpHash: String,
   otpExpires: Date,
   motorcycle: {
-    type: String,
+    type: { type: String }, 
     licensePlate: String,
     model: String,
     year: Number,
@@ -13,7 +13,7 @@ const userSchema = new mongoose.Schema({
   },
   walletAddress: String,
   privateKey: String,
-  privateKeyIV: { type: String },
+  privateKeyIV:  String,
 });
 
 module.exports = mongoose.model('User', userSchema);
