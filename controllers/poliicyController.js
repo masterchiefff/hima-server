@@ -195,6 +195,16 @@ exports.getPremiums = async (req, res) => {
   }
 };
 
+exports.test = async (req, res) => {
+  res.json({
+    message: 'Test endpoint',
+    data: {
+      phone: req.user.phone,
+      walletAddress: req.user.walletAddress,
+    },
+  })
+}
+
 exports.getPolicies = async (req, res) => {
   try {
     console.log('Fetching policies for:', req.user.phone);
