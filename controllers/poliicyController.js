@@ -43,17 +43,30 @@ async function getMpesaToken() {
 
 exports.buyInsurance = async (req, res) => {
   const { phone, amountKes, premiumId, duration } = req.body;
+  console.log('buyInsurance called:', { phone, amountKes, premiumId, duration });
   if (!phone || !amountKes || !premiumId || !duration) {
+    console.log('Missing required fields:', { phone, amountKes, premiumId, duration });
     return res.status(400).json({ message: 'Missing required fields' });
   }
 
   const premium = premiums.find(p => p.id === premiumId);
   if (!premium || !premium.amounts[duration]) {
+    console.log('Invalid premium or duration:', { premiumId, duration });
     return res.status(400).json({ message: 'Invalid premium or duration' });
   }
 
+  let user = null;
   try {
+    // Fetch user early
+    console.log('Fetching user...');
+    user = await User.findOne({ phone });
+    if (!user || !user.walletAddress) {
+      console.log('User wallet not found:', { phone });
+      return res.status(400).json({ message: 'User wallet not found. Please complete registration.' });
+    }
+
     // Get quote from Swypt
+    console.log('Fetching Swypt quote...');
     const quoteResponse = await axios.post(
       `${config.swyptApiUrl}/swypt-quotes`,
       {
@@ -61,15 +74,17 @@ exports.buyInsurance = async (req, res) => {
         amount: amountKes,
         fiatCurrency: 'KES',
         cryptoCurrency: 'USDC',
-        network: 'Lisk',
+        network: 'Base',
       },
       { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
     );
     if (quoteResponse.data.statusCode !== 200) {
+      console.log('Swypt quote failed:', quoteResponse.data.message);
       throw new Error(quoteResponse.data.message);
     }
 
     // Initiate M-Pesa STK push
+    console.log('Initiating M-Pesa STK push...');
     const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
     const password = Buffer.from(`${process.env.MPESA_SHORTCODE}${process.env.MPESA_PASSKEY}${timestamp}`).toString('base64');
     const mpesaResponse = await axios.post(
@@ -91,15 +106,12 @@ exports.buyInsurance = async (req, res) => {
     );
 
     if (mpesaResponse.data.ResponseCode !== '0') {
+      console.log('M-Pesa STK push failed:', mpesaResponse.data);
       throw new Error('M-Pesa STK push failed');
     }
 
     // Initiate Swypt on-ramp
-    const user = await User.findOne({ phone });
-    if (!user || !user.walletAddress) {
-      throw new Error('User wallet not found');
-    }
-
+    console.log('Initiating Swypt on-ramp...');
     const onrampResponse = await axios.post(
       `${config.swyptApiUrl}/swypt-onramp`,
       {
@@ -113,20 +125,26 @@ exports.buyInsurance = async (req, res) => {
     );
 
     if (onrampResponse.data.status !== 'success') {
+      console.log('Swypt on-ramp failed:', onrampResponse.data.message);
       throw new Error(onrampResponse.data.message);
     }
 
     const orderID = onrampResponse.data.data.orderID;
 
     // Deposit USDC to HimaEscrow
+    console.log('Depositing USDC to escrow...');
     const amountUsdc = ethers.parseUnits(quoteResponse.data.data.outputAmount, 6); // USDC: 6 decimals
-    const signer = new ethers.Wallet(user.privateKey, provider);
+    const encryptionKey = Buffer.from(config.encryptionKey, 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-cbc', encryptionKey, Buffer.from(user.privateKeyIV, 'hex'));
+    let decryptedPrivateKey = decipher.update(user.privateKey, 'hex', 'utf8') + decipher.final('utf8');
+    const signer = new ethers.Wallet(decryptedPrivateKey, provider);
     const approveTx = await usdcContract.connect(signer).approve(config.escrowContractAddress, amountUsdc);
     await approveTx.wait();
     const depositTx = await escrowContract.connect(signer).deposit(config.usdcAddress, amountUsdc, user.walletAddress);
     const receipt = await depositTx.wait();
 
     // Save policy
+    console.log('Saving policy...');
     const policy = new Policy({
       phone,
       premiumId,
@@ -141,7 +159,9 @@ exports.buyInsurance = async (req, res) => {
     });
     await policy.save();
 
-    const explorerLink = `https://sepolia-explorer.lisk.com/tx/${receipt.transactionHash}`;
+    const explorerLink = `https://sepolia.basescan.org/tx/${receipt.transactionHash}`;
+
+    console.log('Insurance purchased:', { orderID, txHash: receipt.transactionHash, explorerLink });
 
     res.json({
       message: 'Insurance purchased successfully',
@@ -149,27 +169,37 @@ exports.buyInsurance = async (req, res) => {
       transaction: { txHash: receipt.transactionHash, explorerLink },
     });
   } catch (error) {
-    await axios.post(
-      `${config.swyptApiUrl}/user-onramp-ticket`,
-      {
-        phone,
-        amount: amountKes,
-        description: `Failed insurance purchase for premium ${premiumId} (${duration})`,
-        side: 'on-ramp',
-        userAddress: user?.walletAddress || '',
-        symbol: 'USDC',
-        tokenAddress: config.usdcAddress,
-        chain: 'Lisk',
-      },
-      { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
-    );
-    console.error('Error in buyInsurance:', error);
+    console.error('Error in buyInsurance:', error.message, error.response?.data || {});
+    // Attempt to create ticket only if user exists
+    if (user && user.walletAddress) {
+      try {
+        await axios.post(
+          `${config.swyptApiUrl}/user-onramp-ticket`,
+          {
+            phone,
+            amount: amountKes,
+            description: `Failed insurance purchase for premium ${premiumId} (${duration})`,
+            side: 'on-ramp',
+            userAddress: user.walletAddress,
+            symbol: 'USDC',
+            tokenAddress: config.usdcAddress,
+            chain: 'Base',
+          },
+          { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
+        );
+      } catch (ticketError) {
+        console.error('Failed to create Swypt ticket:', ticketError.message, ticketError.response?.data || {});
+      }
+    } else {
+      console.log('Skipping ticket creation: No user wallet address available');
+    }
     res.status(500).json({ message: 'Failed to purchase insurance', error: error.message });
   }
 };
 
 exports.getPolicies = async (req, res) => {
   try {
+    console.log('Fetching policies for:', req.user.phone);
     const policies = await Policy.find({ phone: req.user.phone });
     res.json({ policies });
   } catch (error) {
@@ -187,26 +217,39 @@ exports.mpesaCallback = async (req, res) => {
 
 exports.claimPolicy = async (req, res) => {
   const { policyId } = req.body;
-  if (!policyId) return res.status(400).json({ message: 'Policy ID is required' });
+  console.log('claimPolicy called:', { policyId });
+  if (!policyId) {
+    console.log('Missing policyId');
+    return res.status(400).json({ message: 'Policy ID is required' });
+  }
 
   try {
+    console.log('Fetching policy...');
     const policy = await Policy.findById(policyId);
     if (!policy || policy.phone !== req.user.phone || policy.status !== 'Active') {
+      console.log('Invalid policy:', { policyId, phone: req.user.phone, status: policy?.status });
       return res.status(400).json({ message: 'Invalid or inactive policy' });
     }
 
+    console.log('Fetching user...');
     const user = await User.findOne({ phone: req.user.phone });
     if (!user || !user.walletAddress) {
+      console.log('User wallet not found:', { phone: req.user.phone });
       return res.status(400).json({ message: 'User wallet not found' });
     }
 
     // Withdraw USDC from HimaEscrow
+    console.log('Withdrawing USDC from escrow...');
     const amountUsdc = ethers.parseUnits(policy.amountUsdc || '0', 6);
-    const signer = new ethers.Wallet(user.privateKey, provider);
+    const encryptionKey = Buffer.from(config.encryptionKey, 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-cbc', encryptionKey, Buffer.from(user.privateKeyIV, 'hex'));
+    let decryptedPrivateKey = decipher.update(user.privateKey, 'hex', 'utf8') + decipher.final('utf8');
+    const signer = new ethers.Wallet(decryptedPrivateKey, provider);
     const withdrawTx = await escrowContract.connect(signer).withdraw(config.usdcAddress, amountUsdc, user.walletAddress);
     const receipt = await withdrawTx.wait();
 
     // Initiate Swypt off-ramp
+    console.log('Fetching Swypt off-ramp quote...');
     const quoteResponse = await axios.post(
       `${config.swyptApiUrl}/swypt-quotes`,
       {
@@ -214,19 +257,21 @@ exports.claimPolicy = async (req, res) => {
         amount: policy.amountUsdc,
         fiatCurrency: 'KES',
         cryptoCurrency: 'USDC',
-        network: 'Lisk',
+        network: 'Base',
         category: 'B2C',
       },
       { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
     );
     if (quoteResponse.data.statusCode !== 200) {
+      console.log('Swypt off-ramp quote failed:', quoteResponse.data.message);
       throw new Error(quoteResponse.data.message);
     }
 
+    console.log('Initiating Swypt off-ramp...');
     const offrampResponse = await axios.post(
       `${config.swyptApiUrl}/swypt-order-offramp`,
       {
-        chain: 'Lisk',
+        chain: 'Base',
         hash: receipt.transactionHash,
         partyB: user.phone,
         tokenAddress: config.usdcAddress,
@@ -235,13 +280,17 @@ exports.claimPolicy = async (req, res) => {
     );
 
     if (offrampResponse.data.status !== 'success') {
+      console.log('Swypt off-ramp failed:', offrampResponse.data.message);
       throw new Error(offrampResponse.data.message);
     }
 
+    console.log('Updating policy status...');
     policy.status = 'Claimed';
     await policy.save();
 
-    const explorerLink = `https://sepolia-explorer.lisk.com/tx/${receipt.transactionHash}`;
+    const explorerLink = `https://sepolia.basescan.org/tx/${receipt.transactionHash}`;
+
+    console.log('Claim processed:', { txHash: receipt.transactionHash, orderID: offrampResponse.data.data.orderID });
 
     res.json({
       message: 'Claim processed successfully',
@@ -249,6 +298,7 @@ exports.claimPolicy = async (req, res) => {
       orderID: offrampResponse.data.data.orderID,
     });
   } catch (error) {
+    console.error('Error in claimPolicy:', error);
     await axios.post(
       `${config.swyptApiUrl}/create-offramp-ticket`,
       {
@@ -259,11 +309,10 @@ exports.claimPolicy = async (req, res) => {
         userAddress: user?.walletAddress || '',
         symbol: 'USDC',
         tokenAddress: config.usdcAddress,
-        chain: 'Lisk',
+        chain: 'Base',
       },
       { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
     );
-    console.error('Error in claimPolicy:', error);
     res.status(500).json({ message: 'Failed to process claim', error: error.message });
   }
 };

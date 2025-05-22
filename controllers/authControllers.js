@@ -119,6 +119,35 @@ exports.registerComplete = async (req, res) => {
   const { phone, motorcycle } = req.body;
   console.log('registerComplete called:', { phone, motorcycle, timestamp: new Date().toISOString() });
   try {
+    // Normalize phone number
+    let formattedPhone = phone;
+    if (!phone.match(/^(\+254|254|0|07)\d{9}$/)) {
+      console.log('Invalid phone number format:', { phone });
+      return res.status(400).json({ message: 'Invalid phone number format' });
+    }
+    if (phone.startsWith('7') && phone.length === 9) {
+      formattedPhone = '+254' + phone;
+    } else if (phone.startsWith('07') && phone.length === 10) {
+      formattedPhone = '+254' + phone.slice(1);
+    } else if (phone.startsWith('254') && phone.length === 12) {
+      formattedPhone = '+' + phone;
+    } else if (!phone.startsWith('+254')) {
+      console.log('Phone number must be in +254 format:', { phone });
+      return res.status(400).json({ message: 'Phone number must be in +254 format' });
+    }
+
+    // Check if phone number is already registered
+    console.log('Checking for existing registration...');
+    const existingUser = await User.findOne({ phone: formattedPhone });
+    if (existingUser && existingUser.walletAddress) {
+      console.log('Phone number already registered:', { phone: formattedPhone, walletAddress: existingUser.walletAddress });
+      return res.status(400).json({ message: 'Phone number is already registered' });
+    }
+    if (!existingUser) {
+      console.log('User not found for registration:', { phone: formattedPhone });
+      return res.status(400).json({ message: 'User not found. Please request and verify OTP first' });
+    }
+
     // Validate motorcycle object
     console.log('Validating motorcycle data...');
     if (!motorcycle || typeof motorcycle !== 'object') {
@@ -142,16 +171,9 @@ exports.registerComplete = async (req, res) => {
     console.log('Creating new wallet...');
     const userWallet = ethers.Wallet.createRandom();
 
-    console.log('Querying user from database...');
-    const user = await User.findOne({ phone });
-    if (!user) {
-      console.log('User not found:', { phone });
-      return res.status(400).json({ message: 'User not found' });
-    }
-
     console.log('Updating user data...');
-    user.motorcycle = { type, licensePlate, model, year, engineCapacity };
-    user.walletAddress = userWallet.address;
+    existingUser.motorcycle = { type, licensePlate, model, year, engineCapacity };
+    existingUser.walletAddress = userWallet.address;
     // Validate encryption key
     console.log('Validating encryption key...');
     if (!config.encryptionKey) {
@@ -168,11 +190,11 @@ exports.registerComplete = async (req, res) => {
     console.log('Encrypting private key...');
     const iv = crypto.randomBytes(16);
     const cipher = crypto.createCipheriv('aes-256-cbc', encryptionKey, iv);
-    user.privateKey = cipher.update(userWallet.privateKey, 'utf8', 'hex') + cipher.final('hex');
-    user.privateKeyIV = iv.toString('hex');
+    existingUser.privateKey = cipher.update(userWallet.privateKey, 'utf8', 'hex') + cipher.final('hex');
+    existingUser.privateKeyIV = iv.toString('hex');
 
     console.log('Saving user to database...');
-    await user.save();
+    await existingUser.save();
 
     // Log wallet addresses
     console.log('New Wallet Created:', {
@@ -266,7 +288,7 @@ exports.registerComplete = async (req, res) => {
 
     console.log('Wallet Registered:', {
       newWallet: userWallet.address,
-      phone,
+      phone: formattedPhone,
       txHash,
       from: liskWallet.address,
       explorerLink,
@@ -296,6 +318,10 @@ exports.registerComplete = async (req, res) => {
     });
   } catch (error) {
     console.error('Error in registerComplete:', error);
+    if (error.code === 11000) {
+      console.log('Duplicate phone number detected:', { phone });
+      return res.status(400).json({ message: 'Phone number is already registered' });
+    }
     if (error.code === 'CALL_EXCEPTION' && error.receipt) {
       res.status(500).json({
         message: 'Transaction failed',
