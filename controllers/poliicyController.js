@@ -17,7 +17,41 @@ const escrowContract = new ethers.Contract(config.escrowContractAddress, escrowA
 const usdcAbi = [
   'function approve(address spender, uint256 amount) public returns (bool)',
   'function transferFrom(address from, address to, uint256 amount) public returns (bool)',
+  'function balanceOf(address account) external view returns (uint256)'
 ];
+// const usdcAbi = [
+//     {
+//         "inputs": [
+//           { "internalType": "address", "name": "recipient", "type": "address" },
+//           { "internalType": "uint256", "name": "amount", "type": "uint256" }
+//         ],
+//         "name": "transfer",
+//         "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }],
+//         "stateMutability": "nonpayable",
+//         "type": "function"
+//       },
+//       {
+//         "inputs": [{ "internalType": "address", "name": "account", "type": "address" }],
+//         "name": "balanceOf",
+//         "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+//         "stateMutability": "view",
+//         "type": "function"
+//       },
+//       {
+//         "constant": true,
+//         "inputs": [],
+//         "name": "decimals",
+//         "outputs": [
+//             {
+//                 "name": "",
+//                 "type": "uint8"
+//             }
+//         ],
+//         "payable": false,
+//         "stateMutability": "view",
+//         "type": "function"
+//     }
+// ]
 const usdcContract = new ethers.Contract(config.usdcAddress, usdcAbi, wallet);
 
 async function getMpesaToken() {
@@ -161,7 +195,7 @@ exports.buyInsurance = async (req, res) => {
         type: 'onramp',
         amount: amountKes.toString(),
         fiatCurrency: 'KES',
-        cryptoCurrency: 'cKES',
+        cryptoCurrency: 'USDT',
         network: 'celo',
       },
       { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
@@ -170,6 +204,8 @@ exports.buyInsurance = async (req, res) => {
       console.log('Swypt quote failed:', quoteResponse.data.message);
       throw new Error(quoteResponse.data.message);
     }
+
+    console.log(quoteResponse.data.data.outputAmount)
 
     console.log('Initiating Swypt on-ramp...');
     const maxRetries = 3;
@@ -184,7 +220,7 @@ exports.buyInsurance = async (req, res) => {
             amount: amountKes.toString(),
             side: 'onramp',
             userAddress: user.walletAddress,
-            tokenAddress: '0x3a0d9d7764FAE860A659eb96A500F1323b411e68', // cKES address
+            tokenAddress: config.usdcAddress, 
           },
           { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
         );
@@ -284,29 +320,42 @@ exports.buyInsurance = async (req, res) => {
 
         console.log('Transaction hash:', depositResult.transactionHash);
 
-        // Verify cKES balance
-        console.log('Verifying cKES balance after deposit...');
-        const amountUsdc = ethers.parseUnits(quoteResponse.data.data.outputAmount, 18);
-        let usdcBalance = await usdcContract.balanceOf(user.walletAddress);
-        attempts = 0;
-        const maxBalanceAttempts = config.balanceCheckMaxAttempts || 20;
-        const balanceCheckInterval = config.balanceCheckInterval || 5000;
-        while (usdcBalance < amountUsdc && attempts < maxBalanceAttempts) {
-          console.log(`Attempt ${attempts + 1}: cKES balance ${ethers.formatUnits(usdcBalance, 18)} < ${ethers.formatUnits(amountUsdc, 18)}`);
-          await new Promise(resolve => setTimeout(resolve, balanceCheckInterval));
-          usdcBalance = await usdcContract.balanceOf(user.walletAddress);
-          attempts++;
-        }
-        if (usdcBalance < amountUsdc) {
-          console.log('Swypt deposit failed to credit sufficient cKES:', {
-            expected: ethers.formatUnits(amountUsdc, 18),
-            actual: ethers.formatUnits(usdcBalance, 18),
-          });
-          throw new Error('Swypt deposit failed to credit sufficient cKES');
-        }
+        // Verify USDT balance
+        // console.log('Verifying USDT balance after deposit...');
+        const amountUsdc = ethers.parseUnits(quoteResponse.data.data.outputAmount, 6); 
+        // let usdcBalance; // Use a consistent variable name
+        // try {
+        //   usdcBalance = await usdcContract.balanceOf(user.walletAddress); 
+        //   console.log('Expected USDC amount:', ethers.formatUnits(amountUsdc, 6), 'Actual USDC balance:', ethers.formatUnits(usdcBalance, 6));
+        // } catch (error) {
+        //   console.error('Failed to fetch USDC balance:', {
+        //     error: error.message,
+        //     contractAddress: config.usdcAddress,
+        //     userAddress: user.walletAddress,
+        //     network: (await provider.getNetwork()).name,
+        //   });
+        //   throw new Error(`Failed to verify USDC balance: ${error.message}`);
+        // }
+
+        // attempts = 0;
+        // const maxBalanceAttempts = config.balanceCheckMaxAttempts || 20;
+        // const balanceCheckInterval = config.balanceCheckInterval || 5000;
+        // while (usdcBalance < amountUsdc && attempts < maxBalanceAttempts) {
+        //   console.log(`Attempt ${attempts + 1}: USDC balance ${ethers.formatUnits(usdcBalance, 6)} < ${ethers.formatUnits(amountUsdc, 6)}`);
+        //   await new Promise(resolve => setTimeout(resolve, balanceCheckInterval));
+        //   usdcBalance = await usdcContract.balanceOf(user.walletAddress); 
+        //   attempts++;
+        // }
+        // if (usdcBalance < amountUsdc) {
+        //   console.log('Swypt deposit failed to credit sufficient USDC:', {
+        //     expected: ethers.formatUnits(amountUsdc, 6),
+        //     actual: ethers.formatUnits(usdcBalance, 6),
+        //   });
+        //   throw new Error('Swypt deposit failed to credit sufficient USDC');
+        // }
 
         // Deposit to escrow
-        console.log('Depositing cKES to escrow...');
+        console.log('Depositing USDT to escrow...');
         const encryptionKey = Buffer.from(config.encryptionKey, 'hex');
         const decipher = crypto.createDecipheriv('aes-256-cbc', encryptionKey, Buffer.from(user.privateKeyIV, 'hex'));
         let decryptedPrivateKey = decipher.update(user.privateKey, 'hex', 'utf8') + decipher.final('utf8');
@@ -319,12 +368,12 @@ exports.buyInsurance = async (req, res) => {
           throw new Error('Signer wallet has 0 CELO. Please fund the wallet with CELO for gas fees.');
         }
 
-        console.log('Approving cKES for escrow...');
+        console.log('Approving USDT for escrow...');
         const approveTx = await usdcContract.connect(signer).approve(config.escrowContractAddress, amountUsdc, { gasLimit: 100000 });
         console.log('Approve transaction hash:', approveTx.hash);
         await approveTx.wait();
 
-        console.log('Depositing cKES to escrow contract...');
+        console.log('Depositing USDT to escrow contract...');
         const depositTx = await escrowContract.connect(signer).deposit(config.usdcAddress, amountUsdc, user.walletAddress, { gasLimit: 200000 });
         console.log('Deposit transaction hash:', depositTx.hash);
         const receipt = await depositTx.wait();
@@ -355,7 +404,7 @@ exports.buyInsurance = async (req, res) => {
               description: `Failed insurance purchase: ${error.message}`,
               side: 'on-ramp',
               userAddress: user.walletAddress,
-              symbol: 'cKES',
+              symbol: 'USDT',
               tokenAddress: '0x3a0d9d7764FAE860A659eb96A500F1323b411e68',
               chain: 'celo',
             },
@@ -378,7 +427,7 @@ exports.buyInsurance = async (req, res) => {
             description: `Failed insurance purchase: ${error.message}`,
             side: 'on-ramp',
             userAddress: user.walletAddress,
-            symbol: 'cKES',
+            symbol: 'USDT',
             tokenAddress: '0x3a0d9d7764FAE860A659eb96A500F1323b411e68',
             chain: 'celo',
           },
@@ -528,5 +577,30 @@ exports.claimPolicy = async (req, res) => {
       { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
     );
     res.status(500).json({ message: 'Failed to process claim', error: error.message });
+  }
+};
+
+exports.getPolicyStatus = async (req, res) => {
+  const { orderID } = req.params;
+
+  try {
+    console.log(`Fetching policy status for orderID: ${orderID}`);
+    const policy = await Policy.findOne({ orderID });
+
+    if (!policy) {
+      console.log(`Policy not found for orderID: ${orderID}`);
+      return res.status(404).json({ message: "Policy not found" });
+    }
+
+    res.json({
+      status: policy.status,
+      transactionHash: policy.transactionHash || null,
+      explorerLink: policy.transactionHash
+        ? `https://alfajores-blockscout.celo-testnet.org/tx/${policy.transactionHash}`
+        : null,
+    });
+  } catch (error) {
+    console.error("Error in getPolicyStatus:", error);
+    res.status(500).json({ message: "Failed to fetch policy status", error: error.message });
   }
 };
