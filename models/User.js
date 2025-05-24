@@ -12,6 +12,7 @@ const userSchema = new mongoose.Schema({
     engineCapacity: Number,
   },
   walletAddress: String,
+  registrationTxHash: { type: String },
   privateKey: String,
   privateKeyIV:  String,
 });

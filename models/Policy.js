@@ -18,6 +18,9 @@ const policySchema = new mongoose.Schema({
   mpesaStatus: { type: String, default: 'Pending' },
   mpesaResultDesc: String,
   orderID: String,
+  transactionHash: { type: String }, 
+  swyptDepositHash: { type: String }, 
+  approveTxHash: { type: String },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 });
