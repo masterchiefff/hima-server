@@ -23,13 +23,15 @@ exports.requestOtp = async (req, res) => {
   }
 
   if (phone.startsWith('7') && phone.length === 9) {
-    formattedPhone = '+254' + phone;
+    formattedPhone = '254' + phone;
   } else if (phone.startsWith('07') && phone.length === 10) {
-    formattedPhone = '+254' + phone.slice(1);
+    formattedPhone = '254' + phone.slice(1);
+  } else if (phone.startsWith('+254') && phone.length === 13) {
+    formattedPhone = phone.slice(1);
   } else if (phone.startsWith('254') && phone.length === 12) {
-    formattedPhone = '+' + phone;
-  } else if (!phone.startsWith('+254')) {
-    return res.status(400).json({ message: 'Phone number must be in +254 format' });
+    formattedPhone = phone;
+  } else {
+    return res.status(400).json({ message: 'Phone number must be in +254, 254, 07, or 7 format followed by 9 digits' });
   }
 
   try {
@@ -51,7 +53,7 @@ exports.requestOtp = async (req, res) => {
     console.log('User Saved:', { phone: user.phone, otpExpires });
 
     const smsResponse = await africastalking.SMS.send({
-      to: [formattedPhone],
+      to: [`+${formattedPhone}`],
       message: `Your BodaSure OTP is ${otp}. Valid until ${otpExpires.toLocaleString('en-US', { timeZone: 'Africa/Nairobi' })}.`,
       from: config.africastalkingSenderId,
     });
@@ -73,13 +75,15 @@ exports.verifyOtp = async (req, res) => {
   }
 
   if (phone.startsWith('7') && phone.length === 9) {
-    formattedPhone = '+254' + phone;
+    formattedPhone = '254' + phone;
   } else if (phone.startsWith('07') && phone.length === 10) {
-    formattedPhone = '+254' + phone.slice(1);
+    formattedPhone = '254' + phone.slice(1);
+  } else if (phone.startsWith('+254') && phone.length === 13) {
+    formattedPhone = phone.slice(1);
   } else if (phone.startsWith('254') && phone.length === 12) {
-    formattedPhone = '+' + phone;
-  } else if (!phone.startsWith('+254')) {
-    return res.status(400).json({ message: 'Phone number must be in +254 format' });
+    formattedPhone = phone;
+  } else {
+    return res.status(400).json({ message: 'Phone number must be in +254, 254, 07, or 7 format followed by 9 digits' });
   }
 
   try {
@@ -126,14 +130,16 @@ exports.registerComplete = async (req, res) => {
       return res.status(400).json({ message: 'Invalid phone number format' });
     }
     if (phone.startsWith('7') && phone.length === 9) {
-      formattedPhone = '+254' + phone;
+      formattedPhone = '254' + phone;
     } else if (phone.startsWith('07') && phone.length === 10) {
-      formattedPhone = '+254' + phone.slice(1);
+      formattedPhone = '254' + phone.slice(1);
+    } else if (phone.startsWith('+254') && phone.length === 13) {
+      formattedPhone = phone.slice(1);
     } else if (phone.startsWith('254') && phone.length === 12) {
-      formattedPhone = '+' + phone;
-    } else if (!phone.startsWith('+254')) {
-      console.log('Phone number must be in +254 format:', { phone });
-      return res.status(400).json({ message: 'Phone number must be in +254 format' });
+      formattedPhone = phone;
+    } else {
+      console.log('Phone number must be in +254, 254, 07, or 7 format:', { phone });
+      return res.status(400).json({ message: 'Phone number must be in +254, 254, 07, or 7 format followed by 9 digits' });
     }
 
     // Check if phone number is already registered
@@ -200,13 +206,13 @@ exports.registerComplete = async (req, res) => {
     console.log('New Wallet Created:', {
       address: userWallet.address,
       liskWallet: liskWallet.address,
-      message: 'Preparing to send 0 ETH from lisk wallet to new wallet',
+      message: 'Preparing to send 0 CELO from lisk wallet to new wallet',
     });
 
     // Check lisk wallet balance for gas fees
     console.log('Checking lisk wallet balance...');
     const balance = await provider.getBalance(liskWallet.address);
-    const amount = ethers.parseUnits('0', 18); // 0 ETH
+    const amount = ethers.parseUnits('0', 18); // 0 CELO
     const gasLimit = ethers.toBigInt(21000); // Standard gas limit for simple transfer
 
     // Get gas pricing
@@ -237,9 +243,9 @@ exports.registerComplete = async (req, res) => {
         required: ethers.formatUnits(gasEstimate, 18),
       });
       return res.status(400).json({
-        message: `Insufficient ETH in lisk wallet for gas fees. Available: ${ethers.formatUnits(balance, 18)} ETH, Required: ${ethers.formatUnits(gasEstimate, 18)} ETH`,
+        message: `Insufficient CELO in lisk wallet for gas fees. Available: ${ethers.formatUnits(balance, 18)} CELO, Required: ${ethers.formatUnits(gasEstimate, 18)} CELO`,
         walletAddress: liskWallet.address,
-        fundingInstructions: 'Send Base Sepolia ETH to this address via a faucet like https://faucet.base.org/',
+        fundingInstructions: 'Send Celo Alfajores testnet CELO to this address via a faucet like https://faucet.celo.org/alfajores',
       });
     }
 
@@ -284,7 +290,7 @@ exports.registerComplete = async (req, res) => {
 
     // Fallback to sendTx.hash if receipt.transactionHash is undefined
     const txHash = receipt.transactionHash || sendTx.hash;
-    const explorerLink = `https://sepolia.basescan.org/tx/${txHash}`;
+    const explorerLink = `https://alfajores-blockscout.celo-testnet.org/tx/${txHash}`;
 
     console.log('Wallet Registered:', {
       newWallet: userWallet.address,
@@ -305,13 +311,13 @@ exports.registerComplete = async (req, res) => {
         explorerLink,
       },
       liskInstructions: {
-        network: 'Base Sepolia Testnet',
+        network: 'Celo Alfajores Testnet',
         rpcUrl: config.liskRpc,
-        chainId: 84532,
-        blockExplorer: 'https://sepolia.basescan.org',
+        chainId: 44787,
+        blockExplorer: 'https://alfajores-blockscout.celo-testnet.org',
         steps: [
-          `Add Base Sepolia to MetaMask: Network Name: Base Sepolia, RPC URL: ${config.liskRpc}, Chain ID: 84532, Currency: ETH`,
-          'Fund wallet with testnet ETH via Base Sepolia faucet: https://faucet.base.org/',
+          `Add Celo Alfajores to MetaMask: Network Name: Celo Alfajores, RPC URL: ${config.liskRpc}, Chain ID: 44787, Currency: CELO`,
+          'Fund wallet with testnet CELO via Celo Alfajores faucet: https://faucet.celo.org/alfajores',
           `View your transaction at: ${explorerLink}`,
         ],
       },
@@ -327,10 +333,36 @@ exports.registerComplete = async (req, res) => {
         message: 'Transaction failed',
         error: `Transaction reverted: ${error.reason || 'Unknown reason'}`,
         transactionHash: error.receipt.transactionHash,
-        explorerLink: `https://sepolia.basescan.org/tx/${error.receipt.transactionHash}`,
+        explorerLink: `https://alfajores-blockscout.celo-testnet.org/tx/${error.receipt.transactionHash}`,
       });
     } else {
       res.status(500).json({ message: 'Registration failed', error: error.message });
     }
+  }
+};
+
+exports.getUser = async (req, res) => {
+  try {
+    if (!req.user || !req.user.phone) {
+      console.log('Authentication failed: req.user or req.user.phone is undefined');
+      return res.status(401).json({ message: 'Authentication failed: User not identified' });
+    }
+
+    console.log('Fetching user data for:', req.user.phone);
+    const user = await User.findOne({ phone: req.user.phone });
+    
+    if (!user) {
+      console.log('User not found:', req.user.phone);
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({
+      phone: user.phone,
+      walletAddress: user.walletAddress || null,
+      motorcycle: user.motorcycle || null,
+    });
+  } catch (error) {
+    console.error('Error in getUser:', error);
+    res.status(500).json({ message: 'Failed to fetch user data', error: error.message });
   }
 };

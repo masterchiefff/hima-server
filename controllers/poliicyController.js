@@ -31,8 +31,28 @@ async function getMpesaToken() {
 exports.buyInsurance = async (req, res) => {
   const { phone, amountKes, premiumId, duration } = req.body;
   console.log('buyInsurance called:', { phone, amountKes, premiumId, duration });
-  if (!phone || !amountKes || !premiumId || !duration) {
-    console.log('Missing required fields:', { phone, amountKes, premiumId, duration });
+
+  // Normalize phone number
+  let formattedPhone = phone;
+  if (!phone.match(/^(\+254|254|0|07)\d{9}$/)) {
+    console.log('Invalid phone number format:', { phone });
+    return res.status(400).json({ message: 'Invalid phone number format' });
+  }
+  if (phone.startsWith('7') && phone.length === 9) {
+    formattedPhone = '254' + phone;
+  } else if (phone.startsWith('07') && phone.length === 10) {
+    formattedPhone = '254' + phone.slice(1);
+  } else if (phone.startsWith('+254') && phone.length === 13) {
+    formattedPhone = phone.slice(1);
+  } else if (phone.startsWith('254') && phone.length === 12) {
+    formattedPhone = phone;
+  } else {
+    console.log('Phone number must be in +254, 254, 07, or 7 format:', { phone });
+    return res.status(400).json({ message: 'Phone number must be in +254, 254, 07, or 7 format followed by 9 digits' });
+  }
+
+  if (!formattedPhone || !amountKes || !premiumId || !duration) {
+    console.log('Missing required fields:', { formattedPhone, amountKes, premiumId, duration });
     return res.status(400).json({ message: 'Missing required fields' });
   }
 
@@ -45,28 +65,28 @@ exports.buyInsurance = async (req, res) => {
   let user = null;
   try {
     console.log('Fetching premium...');
-    const premium = await Premium.findOne({ id: premiumId });
+    const premium = await Premium.findOne({ id: premiumId }); // Assumes Premium model has 'id' as String
     if (!premium) {
       console.log('Premium not found:', { premiumId });
       return res.status(400).json({ message: 'Invalid premium' });
     }
 
     console.log('Fetching user...');
-    user = await User.findOne({ phone });
+    user = await User.findOne({ phone: formattedPhone });
     if (!user || !user.walletAddress) {
-      console.log('User wallet not found:', { phone });
+      console.log('User wallet not found:', { formattedPhone });
       return res.status(400).json({ message: 'User wallet not found. Please complete registration.' });
     }
 
     console.log('Fetching Swypt quote...');
     const quoteResponse = await axios.post(
-      `${config.swyptApiUrl}/swypt-quotes`,
+      'https://pool.swypt.io/api/swypt-quotes',
       {
         type: 'onramp',
-        amount: amountKes,
+        amount: amountKes.toString(),
         fiatCurrency: 'KES',
-        cryptoCurrency: 'USDC',
-        network: 'Base',
+        cryptoCurrency: 'cKES',
+        network: 'celo',
       },
       { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
     );
@@ -75,112 +95,231 @@ exports.buyInsurance = async (req, res) => {
       throw new Error(quoteResponse.data.message);
     }
 
-    console.log('Initiating M-Pesa STK push...');
-    const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
-    const password = Buffer.from(`${process.env.MPESA_SHORTCODE}${process.env.MPESA_PASSKEY}${timestamp}`).toString('base64');
-    const mpesaResponse = await axios.post(
-      config.mpesaApiUrl,
-      {
-        BusinessShortCode: process.env.MPESA_SHORTCODE,
-        Password: password,
-        Timestamp: timestamp,
-        TransactionType: 'CustomerPayBillOnline',
-        Amount: amountKes,
-        PartyA: phone,
-        PartyB: process.env.MPESA_SHORTCODE,
-        PhoneNumber: phone,
-        CallBackURL: `${config.baseUrl}mpesa-callback`,
-        AccountReference: `BodaSure-${premiumId}-${duration}`,
-        TransactionDesc: 'Insurance Premium',
-      },
-      { headers: { Authorization: `Bearer ${await getMpesaToken()}` } }
-    );
-
-    if (mpesaResponse.data.ResponseCode !== '0') {
-      console.log('M-Pesa STK push failed:', mpesaResponse.data);
-      throw new Error('M-Pesa STK push failed');
-    }
-
     console.log('Initiating Swypt on-ramp...');
-    const onrampResponse = await axios.post(
-      `${config.swyptApiUrl}/swypt-onramp`,
-      {
-        partyA: phone,
-        amount: amountKes,
-        side: 'onramp',
-        userAddress: user.walletAddress,
-        tokenAddress: config.usdcAddress,
-      },
-      { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
-    );
+    const maxRetries = 3;
+    let retryCount = 0;
+    let onrampResponse;
+    while (retryCount < maxRetries) {
+      try {
+        onrampResponse = await axios.post(
+          'https://pool.swypt.io/api/swypt-onramp',
+          {
+            partyA: formattedPhone,
+            amount: amountKes.toString(),
+            side: 'onramp',
+            userAddress: user.walletAddress,
+            tokenAddress: config.usdcAddress, // Should be cKES: 0x3a0d9d7764FAE860A659eb96A500F1323b411e68
+          },
+          { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
+        );
 
-    if (onrampResponse.data.status !== 'success') {
-      console.log('Swypt on-ramp failed:', onrampResponse.data.message);
-      throw new Error(onrampResponse.data.message);
+        if (onrampResponse.data.status !== 'success' || !onrampResponse.data.data?.orderID) {
+          throw new Error(`Swypt on-ramp failed: ${onrampResponse.data.message || 'Invalid response format'}`);
+        }
+        console.log('Swypt on-ramp response:', JSON.stringify(onrampResponse.data, null, 2));
+        break;
+      } catch (error) {
+        retryCount++;
+        console.error(`Swypt on-ramp attempt ${retryCount} failed:`, error.message);
+        if (retryCount === maxRetries) {
+          console.error('Max retries reached for Swypt on-ramp');
+          throw error;
+        }
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
     }
 
     const orderID = onrampResponse.data.data.orderID;
 
-    console.log('Depositing USDC to escrow...');
-    const amountUsdc = ethers.parseUnits(quoteResponse.data.data.outputAmount, 6);
-    const encryptionKey = Buffer.from(config.encryptionKey, 'hex');
-    const decipher = crypto.createDecipheriv('aes-256-cbc', encryptionKey, Buffer.from(user.privateKeyIV, 'hex'));
-    let decryptedPrivateKey = decipher.update(user.privateKey, 'hex', 'utf8') + decipher.final('utf8');
-    const signer = new ethers.Wallet(decryptedPrivateKey, provider);
-    const approveTx = await usdcContract.connect(signer).approve(config.escrowContractAddress, amountUsdc);
-    await approveTx.wait();
-    const depositTx = await escrowContract.connect(signer).deposit(config.usdcAddress, amountUsdc, user.walletAddress);
-    const receipt = await depositTx.wait();
-
-    console.log('Saving policy...');
+    // Save preliminary policy
+    console.log('Saving preliminary policy...');
     const policy = new Policy({
-      phone,
-      premiumId,
+      phone: formattedPhone,
+      premiumId, // Now a String, matching "basic-accident"
       premiumName: premium.name,
       amountKes,
       amountUsdc: quoteResponse.data.data.outputAmount,
       duration,
       coverage: premium.coverages.reduce((acc, cov) => ({ ...acc, [cov.id]: cov.included }), {}),
       orderID,
-      transactionHash: receipt.transactionHash,
-      status: 'Active',
+      status: 'Pending', // Now valid in the enum
+      mpesaStatus: 'Pending',
     });
     await policy.save();
 
-    const explorerLink = `https://sepolia.basescan.org/tx/${receipt.transactionHash}`;
-
-    console.log('Insurance purchased:', { orderID, txHash: receipt.transactionHash, explorerLink });
-
-    res.json({
-      message: 'Insurance purchased successfully',
+    // Return early to inform user of STK push
+    res.status(202).json({
+      message: 'STK Push initiated. Please complete the M-Pesa payment to proceed.',
       orderID,
-      transaction: { txHash: receipt.transactionHash, explorerLink },
+    });
+
+    // Continue processing asynchronously
+    setImmediate(async () => {
+      try {
+        // Check on-ramp status
+        console.log('Checking on-ramp status...');
+        let statusResponse;
+        let attempts = 0;
+        const maxStatusAttempts = config.statusCheckMaxAttempts || 12; // 60 seconds
+        const statusCheckInterval = config.statusCheckInterval || 5000;
+        while (attempts < maxStatusAttempts) {
+          statusResponse = await axios.get(
+            `https://pool.swypt.io/api/order-onramp-status/${orderID}`,
+            { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
+          );
+          if (statusResponse.data.status === 'success' && statusResponse.data.data.status === 'SUCCESS') {
+            console.log('STK push successful:', JSON.stringify(statusResponse.data, null, 2));
+            break;
+          } else if (statusResponse.data.status === 'success' && statusResponse.data.data.status === 'FAILED') {
+            console.log('STK push failed:', statusResponse.data.data.message);
+            throw new Error(`STK push failed: ${statusResponse.data.data.message}`);
+          }
+          console.log(`Attempt ${attempts + 1}: STK push status ${statusResponse.data.data?.status || 'unknown'}`);
+          await new Promise(resolve => setTimeout(resolve, statusCheckInterval));
+          attempts++;
+        }
+        if (!statusResponse || statusResponse.data.data.status !== 'SUCCESS') {
+          throw new Error('STK push not confirmed within timeout');
+        }
+
+        // Process crypto deposit
+        console.log('Processing crypto deposit...');
+        const depositResponse = await axios.post(
+          'https://pool.swypt.io/api/swypt-deposit',
+          {
+            chain: 'celo',
+            address: user.walletAddress,
+            orderID,
+            project: 'onramp',
+          },
+          { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
+        );
+        if (depositResponse.data.status !== 200) {
+          console.log('Swypt deposit failed:', depositResponse.data.message);
+          throw new Error(`Swypt deposit failed: ${depositResponse.data.message}`);
+        }
+        console.log('Crypto deposit successful:', depositResponse.data.hash);
+
+        // Verify cKES balance
+        console.log('Verifying cKES balance after deposit...');
+        const amountUsdc = ethers.parseUnits(quoteResponse.data.data.outputAmount, 18); // cKES has 18 decimals
+        let usdcBalance = await usdcContract.balanceOf(user.walletAddress);
+        attempts = 0;
+        const maxBalanceAttempts = config.balanceCheckMaxAttempts || 20;
+        const balanceCheckInterval = config.balanceCheckInterval || 5000;
+        while (usdcBalance < amountUsdc && attempts < maxBalanceAttempts) {
+          console.log(`Attempt ${attempts + 1}: cKES balance ${ethers.formatUnits(usdcBalance, 18)} < ${ethers.formatUnits(amountUsdc, 18)}`);
+          await new Promise(resolve => setTimeout(resolve, balanceCheckInterval));
+          usdcBalance = await usdcContract.balanceOf(user.walletAddress);
+          attempts++;
+        }
+        if (usdcBalance < amountUsdc) {
+          console.log('Swypt deposit failed to credit sufficient cKES:', {
+            expected: ethers.formatUnits(amountUsdc, 18),
+            actual: ethers.formatUnits(usdcBalance, 18),
+          });
+          throw new Error('Swypt deposit failed to credit sufficient cKES');
+        }
+        console.log('cKES balance verified:', ethers.formatUnits(usdcBalance, 18), 'cKES');
+
+        // Deposit to escrow
+        console.log('Depositing cKES to escrow...');
+        const encryptionKey = Buffer.from(config.encryptionKey, 'hex');
+        const decipher = crypto.createDecipheriv('aes-256-cbc', encryptionKey, Buffer.from(user.privateKeyIV, 'hex'));
+        let decryptedPrivateKey = decipher.update(user.privateKey, 'hex', 'utf8') + decipher.final('utf8');
+        const signer = new ethers.Wallet(decryptedPrivateKey, provider);
+
+        console.log('Signer address:', signer.address);
+        const celoBalance = await provider.getBalance(signer.address);
+        console.log('Signer CELO balance:', ethers.formatEther(celoBalance), 'CELO');
+        if (celoBalance === 0n) {
+          throw new Error('Signer wallet has 0 CELO. Please fund the wallet with CELO for gas fees.');
+        }
+
+        console.log('Approving cKES for escrow...');
+        const approveTx = await usdcContract.connect(signer).approve(config.escrowContractAddress, amountUsdc, { gasLimit: 100000 });
+        console.log('Approve transaction hash:', approveTx.hash);
+        await approveTx.wait();
+
+        console.log('Depositing cKES to escrow contract...');
+        const depositTx = await escrowContract.connect(signer).deposit(config.usdcAddress, amountUsdc, user.walletAddress, { gasLimit: 200000 });
+        console.log('Deposit transaction hash:', depositTx.hash);
+        const receipt = await depositTx.wait();
+
+        console.log('Updating policy to active...');
+        await Policy.updateOne(
+          { orderID },
+          {
+            transactionHash: receipt.transactionHash,
+            status: 'Active',
+            mpesaStatus: 'Success',
+            mpesaResultDesc: statusResponse.data.data.details.resultDescription,
+          }
+        );
+
+        const explorerLink = `https://alfajores-blockscout.celo-testnet.org/tx/${receipt.transactionHash}`;
+        console.log('Insurance purchased:', { orderID, txHash: receipt.transactionHash, explorerLink });
+
+        // Optionally notify user
+        // await notifyUser(user, { message: 'Insurance purchase completed', orderID, txHash: receipt.transactionHash });
+      } catch (error) {
+        console.error('Async error in buyInsurance:', {
+          message: error.message,
+          code: error.code,
+          transaction: error.transaction,
+          receipt: error.receipt,
+          reason: error.reason,
+        });
+        await Policy.updateOne({ orderID }, { status: 'Failed', mpesaResultDesc: error.message });
+        try {
+          await axios.post(
+            'https://pool.swypt.io/api/user-onramp-ticket',
+            {
+              phone: formattedPhone,
+              amount: amountKes.toString(),
+              description: `Failed insurance purchase for premium ${premiumId} (${duration}): ${error.message}`,
+              side: 'on-ramp',
+              userAddress: user.walletAddress,
+              symbol: 'cKES',
+              tokenAddress: config.usdcAddress,
+              chain: 'celo',
+            },
+            { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
+          );
+        } catch (ticketError) {
+          console.error('Failed to create Swypt ticket:', ticketError.message, ticketError.response?.data || {});
+        }
+      }
     });
   } catch (error) {
-    console.error('Error in buyInsurance:', error.message, error.response?.data || {});
+    console.error('Error in buyInsurance:', {
+      message: error.message,
+      code: error.code,
+      transaction: error.transaction,
+      receipt: error.receipt,
+      reason: error.reason,
+    });
     if (user && user.walletAddress) {
       try {
         await axios.post(
-          `${config.swyptApiUrl}/user-onramp-ticket`,
+          'https://pool.swypt.io/api/user-onramp-ticket',
           {
-            phone,
-            amount: amountKes,
-            description: `Failed insurance purchase for premium ${premiumId} (${duration})`,
+            phone: formattedPhone,
+            amount: amountKes.toString(),
+            description: `Failed insurance purchase for premium ${premiumId} (${duration}): ${error.message}`,
             side: 'on-ramp',
             userAddress: user.walletAddress,
-            symbol: 'USDC',
+            symbol: 'cKES',
             tokenAddress: config.usdcAddress,
-            chain: 'Base',
+            chain: 'celo',
           },
           { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
         );
       } catch (ticketError) {
         console.error('Failed to create Swypt ticket:', ticketError.message, ticketError.response?.data || {});
       }
-    } else {
-      console.log('Skipping ticket creation: No user wallet address available');
     }
-    res.status(500).json({ message: 'Failed to purchase insurance', error: error.message });
+    res.status(500).json({ message: 'Failed to initiate insurance purchase', error: error.message });
   }
 };
 
@@ -202,8 +341,8 @@ exports.test = async (req, res) => {
       phone: req.user.phone,
       walletAddress: req.user.walletAddress,
     },
-  })
-}
+  });
+};
 
 exports.getPolicies = async (req, res) => {
   try {
@@ -253,7 +392,7 @@ exports.claimPolicy = async (req, res) => {
     let decryptedPrivateKey = decipher.update(user.privateKey, 'hex', 'utf8') + decipher.final('utf8');
     const signer = new ethers.Wallet(decryptedPrivateKey, provider);
     const withdrawTx = await escrowContract.connect(signer).withdraw(config.usdcAddress, amountUsdc, user.walletAddress);
-    const receipt = await depositTx.wait();
+    const receipt = await withdrawTx.wait();
 
     console.log('Fetching Swypt off-ramp quote...');
     const quoteResponse = await axios.post(
@@ -263,7 +402,7 @@ exports.claimPolicy = async (req, res) => {
         amount: policy.amountUsdc,
         fiatCurrency: 'KES',
         cryptoCurrency: 'USDC',
-        network: 'Base',
+        network: 'celo',
         category: 'B2C',
       },
       { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
@@ -277,9 +416,9 @@ exports.claimPolicy = async (req, res) => {
     const offrampResponse = await axios.post(
       `${config.swyptApiUrl}/swypt-order-offramp`,
       {
-        chain: 'Base',
+        chain: 'celo',
         hash: receipt.transactionHash,
-        partyB: user.phone,
+        partyB: req.user.phone,
         tokenAddress: config.usdcAddress,
       },
       { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
@@ -294,7 +433,7 @@ exports.claimPolicy = async (req, res) => {
     policy.status = 'Claimed';
     await policy.save();
 
-    const explorerLink = `https://sepolia.basescan.org/tx/${receipt.transactionHash}`;
+    const explorerLink = `https://alfajores-blockscout.celo-testnet.org/tx/${receipt.transactionHash}`;
 
     console.log('Claim processed:', { txHash: receipt.transactionHash, orderID: offrampResponse.data.data.orderID });
 
@@ -313,9 +452,9 @@ exports.claimPolicy = async (req, res) => {
         description: `Failed claim for policy ${policyId}`,
         side: 'off-ramp',
         userAddress: user?.walletAddress || '',
-        symbol: 'USDC',
+        symbol: 'cUSD',
         tokenAddress: config.usdcAddress,
-        chain: 'Base',
+        chain: 'celo',
       },
       { headers: { 'x-api-key': process.env.SWYPT_API_KEY, 'x-api-secret': process.env.SWYPT_API_SECRET } }
     );

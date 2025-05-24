@@ -1,7 +1,7 @@
 const isProduction = process.env.NODE_ENV === 'production';
 const baseUrl = isProduction
-  ? process.env.RENDER_BASE_URL || 'https://hima-server.onrender.com/api/v1/'
-  : 'http://localhost:5000/api/v1/';
+  ? process.env.RENDER_BASE_URL || 'https://hima-server.onrender.com/api/v1'
+  : 'http://localhost:5000/api/v1';
 
 const config = {
   baseUrl,

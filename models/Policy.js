@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const policySchema = new mongoose.Schema({
   phone: { type: String, required: true },
-  premiumId: { type: Number, required: true },
+  premiumId: { type: String, required: true },
   premiumName: { type: String, required: true },
   amountKes: { type: Number, required: true },
   amountCusd: String,
@@ -14,7 +14,9 @@ const policySchema = new mongoose.Schema({
     motorcycleDamage: { type: Boolean, default: false },
     theftProtection: { type: Boolean, default: false },
   },
-  status: { type: String, enum: ['Active', 'Claimed', 'Expired'], default: 'Active' },
+  status: { type: String, enum: ['Pending', 'Active', 'Claimed', 'Expired'], default: 'Pending' },
+  mpesaStatus: { type: String, default: 'Pending' },
+  mpesaResultDesc: String,
   orderID: String,
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
