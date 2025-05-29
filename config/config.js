@@ -12,12 +12,13 @@ const config = {
   mpesaApiUrl: process.env.MPESA_API_URL,
   africastalkingUsername: process.env.AFRICASTALKING_USERNAME,
   africastalkingApiKey: process.env.AFRICASTALKING_API_KEY,
-  africastalkingSenderId: "AFTKNG",
+  africastalkingSenderId: process.env.AFRICASTALKING_SENDER_ID,
   liskRpc: process.env.LISK_RPC_URL,
   liskPrivateKey: process.env.LISK_PRIVATE_KEY,
   escrowContractAddress: process.env.ESCROW_CONTRACT_ADDRESS,
   usdcAddress: process.env.USDC_ADDRESS,
-  encryptionKey: process.env.ENCRYPTION_KEY
+  encryptionKey: process.env.ENCRYPTION_KEY,
+  feeCurrecyAdapter: process.env.FEE_CURRENCY_ADAPTER || 'usdc',
 };
 
 module.exports = config;
